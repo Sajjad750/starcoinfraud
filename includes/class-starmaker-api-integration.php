@@ -47,50 +47,84 @@ class SC_StarMaker_API_Integration {
     public function store_gold_amount_in_order_meta($order_id) {
         $order = wc_get_order($order_id);
         if (!$order) {
+            error_log('[StarMaker] Error: Order not found for ID: ' . $order_id);
             return;
         }
+
+        // Add initial debug note
+        $order->add_order_note('[StarMaker] Starting coin calculation for order');
 
         // Calculate gold amount based on order items
         $gold_amount = 0;
         foreach ($order->get_items() as $item) {
             $product = $item->get_product();
             if (!$product) {
+                $order->add_order_note('[StarMaker] Warning: Product not found for item');
                 continue;
             }
 
-            // Check if product is a gold product
-            $is_gold_product = false;
+            // Get product details
+            $price = $product->get_price();
+            $quantity = $item->get_quantity();
+            $sku = $product->get_sku();
             
-            // Check product categories
-            $categories = get_the_terms($product->get_id(), 'product_cat');
-            if ($categories && !is_wp_error($categories)) {
-                foreach ($categories as $category) {
-                    if (stripos($category->name, 'gold') !== false) {
-                        $is_gold_product = true;
-                        break;
-                    }
-                }
+            if (empty($sku)) {
+                // If no SKU set, log warning and skip this product
+                $order->add_order_note(sprintf(
+                    '[StarMaker] Warning: No SKU set for product "%s" (ID: %d). SKU should contain the coin amount.',
+                    $product->get_name(),
+                    $product->get_id()
+                ));
+                error_log(sprintf(
+                    '[StarMaker] Warning: No SKU set for product "%s" (ID: %d)',
+                    $product->get_name(),
+                    $product->get_id()
+                ));
+                continue;
             }
             
-            // Check product name
-            if (!$is_gold_product && stripos($product->get_name(), 'gold') !== false) {
-                $is_gold_product = true;
+            // Get coin amount from SKU
+            $coins = intval($sku);
+            
+            if ($coins <= 0) {
+                // If SKU is not a valid number, log warning and skip this product
+                $order->add_order_note(sprintf(
+                    '[StarMaker] Warning: Invalid SKU "%s" for product "%s". SKU should be a number representing coins.',
+                    $sku,
+                    $product->get_name()
+                ));
+                error_log(sprintf(
+                    '[StarMaker] Warning: Invalid SKU "%s" for product "%s"',
+                    $sku,
+                    $product->get_name()
+                ));
+                continue;
             }
             
-            if ($is_gold_product) {
-                // If it's a gold product, use the quantity as gold amount
-                $gold_amount += $item->get_quantity();
-            }
-        }
-        
-        // If no gold products found, calculate gold based on order total
-        if ($gold_amount === 0) {
-            // Default conversion: 1 USD = 1 gold (adjust as needed)
-            $gold_amount = $order->get_total();
+            // Calculate total coins for this item
+            $item_coins = $coins * $quantity;
+            $gold_amount += $item_coins;
+            
+            // Add detailed debug note for each item
+            $order->add_order_note(sprintf(
+                '[StarMaker] Item: %s | Price: $%s | Coins per unit: %d | Quantity: %d | Total coins: %d',
+                $product->get_name(),
+                $price,
+                $coins,
+                $quantity,
+                $item_coins
+            ));
         }
         
         // Store gold amount in order meta
         update_post_meta($order_id, '_gold_amount', $gold_amount);
+        
+        // Add final debug note
+        $order->add_order_note(sprintf(
+            '[StarMaker] Final calculation: Total coins: %d | Order total: $%s',
+            $gold_amount,
+            $order->get_total()
+        ));
     }
 
     /**
@@ -102,30 +136,51 @@ class SC_StarMaker_API_Integration {
     public function deliver_items_via_starmaker_api($order_id) {
         $order = wc_get_order($order_id);
         if (!$order) {
+            error_log('[StarMaker] Error: Order not found for ID: ' . $order_id);
             return false;
         }
 
         // Add debug note about starting API call
-        $order->add_order_note('[Debug] Starting StarMaker API call');
+        $order->add_order_note('[StarMaker] Starting API call to deliver coins');
 
         // Check if order has already been processed
         if (get_post_meta($order_id, '_starmaker_api_processed', true)) {
-            $order->add_order_note('[Debug] Order already processed with StarMaker API');
+            $order->add_order_note('[StarMaker] Warning: Order already processed with StarMaker API');
             return true;
         }
 
         // Get StarMaker ID
         $starmaker_id = get_post_meta($order_id, '_billing_starmaker_id', true);
         if (empty($starmaker_id)) {
-            $order->add_order_note('[Debug] Error: No StarMaker ID found for order');
+            $order->add_order_note('[StarMaker] Error: No StarMaker ID found for order');
             return false;
         }
 
-        // Get gold amount
+        // Get gold amount from order meta (which was calculated from SKUs)
         $gold_amount = get_post_meta($order_id, '_gold_amount', true);
         if (empty($gold_amount)) {
-            $gold_amount = $order->get_total();
-            $order->add_order_note('[Debug] Using order total as gold amount: ' . $gold_amount);
+            // If no gold amount found, recalculate from order items
+            $gold_amount = 0;
+            foreach ($order->get_items() as $item) {
+                $product = $item->get_product();
+                if (!$product) {
+                    continue;
+                }
+                
+                $sku = $product->get_sku();
+                if (!empty($sku)) {
+                    $coins = intval($sku);
+                    $gold_amount += $coins * $item->get_quantity();
+                }
+            }
+            
+            if ($gold_amount <= 0) {
+                $order->add_order_note('[StarMaker] Error: Could not determine coin amount from SKUs');
+                return false;
+            }
+            
+            // Store the recalculated amount
+            update_post_meta($order_id, '_gold_amount', $gold_amount);
         }
 
         // Prepare request data
@@ -133,12 +188,12 @@ class SC_StarMaker_API_Integration {
             'sid' => $starmaker_id,
             'currency' => $order->get_currency(),
             'price' => $order->get_total(),
-            'gold' => $gold_amount,
+            'gold' => intval($gold_amount), // Ensure we're sending an integer value
             'oid' => $order_id . '_' . time(),
         );
 
         // Add debug note about request data
-        $order->add_order_note('[Debug] Request Data: ' . print_r($request_data, true));
+        $order->add_order_note('[StarMaker] API Request Data: ' . print_r($request_data, true));
 
         // API credentials
         $app_key = 'hashtag-7i36xt0t';
@@ -155,9 +210,12 @@ class SC_StarMaker_API_Integration {
         $signature = hash_hmac('sha256', $message, $app_secret);
         
         // Add debug note about request details
-        $order->add_order_note('[Debug] API URL: ' . $api_url);
-        $order->add_order_note('[Debug] Request Timestamp: ' . $timestamp);
-        $order->add_order_note('[Debug] Request Signature: ' . $signature);
+        $order->add_order_note(sprintf(
+            '[StarMaker] API Details - URL: %s | Timestamp: %d | Signature: %s',
+            $api_url,
+            $timestamp,
+            $signature
+        ));
         
         // Set up request arguments
         $args = array(
@@ -175,7 +233,7 @@ class SC_StarMaker_API_Integration {
         );
         
         // Add debug note before making the request
-        $order->add_order_note('[Debug] Making API request...');
+        $order->add_order_note('[StarMaker] Making API request...');
         
         // Make the API request
         $response = wp_remote_post($api_url, $args);
@@ -183,7 +241,8 @@ class SC_StarMaker_API_Integration {
         // Check for errors
         if (is_wp_error($response)) {
             $error_message = $response->get_error_message();
-            $order->add_order_note('[Debug] API Error: ' . $error_message);
+            $order->add_order_note('[StarMaker] API Error: ' . $error_message);
+            error_log('[StarMaker] API Error: ' . $error_message);
             return false;
         }
         
@@ -192,12 +251,13 @@ class SC_StarMaker_API_Integration {
         $data = json_decode($body, true);
         
         // Add debug note about response
-        $order->add_order_note('[Debug] API Response: ' . print_r($data, true));
+        $order->add_order_note('[StarMaker] API Response: ' . print_r($data, true));
         
         // Check response status
         if (empty($data) || !isset($data['code'])) {
             $error_message = 'Invalid response from StarMaker API';
-            $order->add_order_note('[Debug] Error: ' . $error_message);
+            $order->add_order_note('[StarMaker] Error: ' . $error_message);
+            error_log('[StarMaker] Error: ' . $error_message);
             return false;
         }
         
@@ -207,30 +267,32 @@ class SC_StarMaker_API_Integration {
         // Store StarMaker order ID
         if (isset($data['data']['cid'])) {
             update_post_meta($order_id, '_starmaker_order_id', $data['data']['cid']);
-            $order->add_order_note('[Debug] Stored StarMaker Order ID: ' . $data['data']['cid']);
+            $order->add_order_note(sprintf(
+                '[StarMaker] Stored StarMaker Order ID: %s',
+                $data['data']['cid']
+            ));
         }
         
         // Handle response based on status code
         switch ($data['code']) {
             case 0:
-                $order->add_order_note('[Debug] Success: Order completed successfully');
+                $order->add_order_note('[StarMaker] Success: Order completed successfully');
                 $order->update_status('completed', 'StarMaker API: Order completed successfully.');
                 return true;
                 
             case 1:
-                $order->add_order_note('[Debug] Error: Payment declined');
+                $order->add_order_note('[StarMaker] Error: Payment declined');
                 $order->update_status('failed', 'StarMaker API: Payment declined.');
                 return false;
                 
             case 151:
-                $order->add_order_note('[Debug] Notice: Order pending payment (risk control)');
+                $order->add_order_note('[StarMaker] Notice: Order pending payment (risk control)');
                 $order->update_status('on-hold', 'StarMaker API: Order pending payment due to risk control.');
                 return false;
                 
             default:
                 $error_message = isset($data['msg']) ? $data['msg'] : 'Unknown error';
-                
-                $order->add_order_note('[Debug] Error: ' . $error_message);
+                $order->add_order_note('[StarMaker] Error: ' . $error_message);
                 $order->update_status('failed', 'StarMaker API Error: ' . $error_message);
                 return false;
         }
