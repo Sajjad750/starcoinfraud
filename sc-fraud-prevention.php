@@ -2145,7 +2145,7 @@ function sc_add_starmaker_info_update_js() {
             
             // Show loading indicator
             if ($('.starmaker-info-display').length === 0) {
-                $('form.checkout').after('<div class="starmaker-info-display" style="margin: 20px 0; padding: 15px; background: #f8f8f8; border-radius: 5px;"><p>Loading StarMaker information...</p></div>');
+                $('form.checkout').after('<div class="starmaker-info-display" style="margin: 20px 0; padding: 15px; background:#3e3e3e; border-radius: 5px;"><p>Loading StarMaker information...</p></div>');
             } else {
                 $('.starmaker-info-display').html('<p>Loading StarMaker information...</p>').show();
             }
