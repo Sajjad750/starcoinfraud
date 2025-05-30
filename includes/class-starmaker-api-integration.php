@@ -196,12 +196,12 @@ class SC_StarMaker_API_Integration {
         $order->add_order_note('[StarMaker] API Request Data: ' . print_r($request_data, true));
 
         // API credentials
-        $app_key = 'hashtag-7i36xt0t';
-        $app_secret = '8a0c3250725d09be379ce8ed901c5cd7';
-        $agent_uid = '12666376951992244';
+        $app_key = 'hashtag-cb5bbd8450f75d34ad6fca62d26725c6';
+        $app_secret = '4651d13d5ed453feab40add2b900b089';
+        $agent_uid = '12666373960089905';
         
         // API endpoint
-        $api_url = 'https://pay-test.starmakerstudios.com/api/v3/external/agent/create-order';
+        $api_url = 'https://pay.starmakerstudios.com/api/v3/external/agent/create-order';
         
         // Generate timestamp and signature
         $timestamp = time();
